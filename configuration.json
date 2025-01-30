@@ -10,5 +10,5 @@
     "api_key": "<your-openai-api-key>",
     "model": "tts-1",
     "voice": "nova"
-  },
+  }
 }
