@@ -139,7 +139,7 @@ async def play_audio_stream(prompt, file_path):
             collected_text += chunk
             for sentence in sentence_generator(collected_text):
                 print(f"TTS {config['main']['tts_engine'].upper()}: {sentence}")
-                if sentence !=".":
+                if sentence.strip() !=".":
                   async for audio_chunk in tts_stream(sentence, config["main"]["tts_engine"]):
                       await f.write(audio_chunk)
                       yield audio_chunk
