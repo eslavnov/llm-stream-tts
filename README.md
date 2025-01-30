@@ -23,7 +23,7 @@ Time to play: 3 seconds.
 ## Installation
 
 1. Clone the repo, navigate to the folder with the code.
-2. Run the setup script with `./setup.sh` for Unix-based systems (make sure to run `chmod +x setup.sh` first) or `start.bat` for Windows). It will create a virtual environment and install the required dependencies.
+2. Run the setup script with `./setup.sh` for Unix-based systems (make sure to run `chmod +x setup.sh` first) or `start.bat` for Windows. It will create a virtual environment and install the required dependencies.
 3. Edit `configuration.json` and add your OpenAI API key ([get it here](https://platform.openai.com/settings/organization/api-keys)). This is the only required parameter, but there are additional optional settings you can further configure - see below!
 
 ## Configuration
@@ -59,7 +59,7 @@ This engine is enabled by default. You can pass additional parameters in your `c
 You can pass additional parameters in your `configuration.json`, see `configuration_examples/configuration_google_cloud.json` for all supported options.
 
 ## Usage
-Run the main script with `./start.sh` for Unix-based systems (make sure to run `chmod +x start.sh` first) or `start.bat` for Windows). This will create an endpoint at `0.0.0.0:8888/play` that accepts your prompt as a parameter. When you access this endpoint, it will call your LLM model and stream the response directly into a TTS engine of your choice. You can test it by navigating in your browser to `http://<your-host-ip>:<your-port>/play?prompt=Tell+me+a+story+about+home+assistant`. You are almost there, the only thing that is left is to create some home assistant automations to start using this service with Home Assistant!
+Run the main script with `./start.sh` for Unix-based systems (make sure to run `chmod +x start.sh` first) or `start.bat` for Windows. This will create an endpoint at `0.0.0.0:8888/play` that accepts your prompt as a parameter. When you access this endpoint, it will call your LLM model and stream the response directly into a TTS engine of your choice. You can test it by navigating in your browser to `http://<your-host-ip>:<your-port>/play?prompt=Tell+me+a+story+about+home+assistant`. You are almost there, the only thing that is left is to create some home assistant automations to start using this service with Home Assistant!
 
 ## Home Assistant integration
 You need to create two automations:
