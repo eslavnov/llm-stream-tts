@@ -1,0 +1,11 @@
+{
+  "google_cloud": {
+    "name": "en-US-Journey-F",
+    "language_code": "en-US",
+    "gender": "FEMALE"
+  },
+  "openai": {
+    "model": "tts-1",
+    "voice": "nova"
+  }
+}
