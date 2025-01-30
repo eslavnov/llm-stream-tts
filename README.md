@@ -1,4 +1,4 @@
-# Home Assistant Assist Extra Functionalities.
+# Quick responses from TTS for long LLM outputs (works with Home Assistant!)
 
 ## What does it do?
 
@@ -46,7 +46,7 @@ General settings go under `"main"` in the `configuration.json`. All of them need
 This engine is enabled by default. You can pass additional parameters in your `configuration.json`, see `configuration_examples/configuration_openai.json` for all supported options.
 
 **To use Google Cloud TTS engine:**
-1. First you need to obtain service account file from Google Cloud. Follow  [https://www.home-assistant.io/integrations/google_cloud/#obtaining-service-account-file](these instructions), you need only text-to-speech.
+1. First you need to obtain service account file from Google Cloud. Follow [these instructions](https://www.home-assistant.io/integrations/google_cloud/#obtaining-service-account-file), you need only text-to-speech.
 2. Change `tts_engine` to `google_cloud` in your `configuration.json`.
 3. Add Google Cloud settings to the `configuration.json`. Only the `"credentials_path"` is required, the rest have default values:
 ```
