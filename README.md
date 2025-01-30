@@ -4,6 +4,8 @@
 
 This script streams the response of your LLM directly into your TTS engine of choice, allowing it to reply quickly (around 3 seconds) even for long responses. So now if you ask your LLM to tell you a long story, you don't have to wait 30 seconds to get a response.
 
+The provided automation examples allow you to integrate this into Home Assistant: when you start a sentence with the words you define, it will switch to this streaming pipeline, which is perfect for stories, audiobooks, summaries, etc.
+
 **Regular behaviour:**
 1. Your prompt is sent to the LLM, where it is processed and response text is generated (2 seconds)
 2. The resulting text is sent to the TTS, where it is processed fully and the resulting audio is generated (depends on the length of the text, let's say 30 seconds)
