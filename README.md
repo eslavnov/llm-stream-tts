@@ -34,7 +34,7 @@ The provided automation examples allow you to expose this script to your HAVPE d
 **TTS engines:**
 1. OpenAI
 2. Google Cloud
-3. Elevenlabs
+3. ElevenLabs
 
 ## Installation
 
@@ -65,7 +65,7 @@ WantedBy=multi-user.target
 ## Configuration
 **General settings**
 
-General settings go under `"main"` in the `configuration.json`. All of them need to be provided, but the default config has already all of them prefilled, except for the `"openai_api_key"`. 
+General settings go under `"main"` in the `configuration.json`. All of them need to be provided, but the default config has already all of them prefilled, except for the `"openai_api_key"` - this is the only field in the whole configuration that you need to provide to get started!
 ```
 {
   "main":{
@@ -79,11 +79,9 @@ General settings go under `"main"` in the `configuration.json`. All of them need
 }
 ```
 
-**TTS settings**
+**TTS settings - OpenAI**
 
-**TTS settings - OpenAI:**
-
-This engine is enabled by default. 
+This engine is enabled by default. If you have already provided your OpenAI API key in the `"main"` section, you are good to go!
 ```
 {
     "main": {
@@ -97,7 +95,7 @@ This engine is enabled by default.
 ```
 You can pass additional parameters in your `configuration.json`, see `configuration_examples/configuration_openai.json` for all supported options.
 
-**TTS settings - Google Cloud:**
+**TTS settings - Google Cloud**
 
 1. First you need to obtain a service account file from Google Cloud. Follow [these instructions](https://www.home-assistant.io/integrations/google_cloud/#obtaining-service-account-file), you need only text-to-speech.
 2. Change `tts_engine` to `google_cloud` in your `configuration.json`.
@@ -115,7 +113,7 @@ You can pass additional parameters in your `configuration.json`, see `configurat
 ```
 You can pass additional parameters in your `configuration.json`, see `configuration_examples/configuration_google_cloud.json` for all supported options.
 
-**TTS settings - Elevenlabs:**
+**TTS settings - Elevenlabs**
 1. First you need to obtain an API key from ElevenLabs. Get it [here](https://elevenlabs.io/app/settings/api-keys).
 2. Change `tts_engine` to `elevenlabs` in your `configuration.json`.
 3. Add ElevenLabs settings to the `configuration.json`. Only the `"api_key"` is required, the rest have default values:
