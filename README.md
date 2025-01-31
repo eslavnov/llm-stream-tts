@@ -138,7 +138,7 @@ Run the main script with `./start.sh` for Unix-based systems (make sure to run `
 ```
 curl --location '127.0.0.1:8888/play?prompt=tell+me+a+story+about+home+assistant'
 ```
-2. `/tts` (POST) - Accepts any text and generates TTS audio directly without running the LLM. Good for audiobooks and other cases where you already have some (long) text. Example usage: 
+2. `/tts` (POST) - Accepts any text and generates TTS audio directly without running the LLM. Good for books, articles, summaries and other cases where you already have some (long) text. Example usage: 
 ```
 curl --location '127.0.0.1:8888/tts' \
 --header 'Content-Type: application/json' \
