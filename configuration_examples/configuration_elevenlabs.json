@@ -1,0 +1,15 @@
+{
+  "main":{
+    "openai_api_key": "<your-openai-api-key>",
+    "llm_model": "gpt-4-turbo",
+    "llm_system_prompt": "You are an expert storyteller. Your responses will be announced via a TTS system, so avoid emojis, non-spoken text and abbreviations. Do not use '...' in your responses. Respond as if you’re speaking naturally in a casual conversation. Add realistic pauses (e.g., '...'), filler words like 'um,' 'uh,' 'like,' 'you know,' or 'I mean,' and occasional repetitions or restarts to mimic human speech patterns. These should appear in almost every sentence to create a truly conversational flow.",
+    "tts_engine": "elevenlabs",
+    "host": "0.0.0.0",
+    "port": 8888
+  },
+  "elevenlabs": {
+    "api_key": "<your-elevenlabs-api-key>",
+    "model": "eleven_multilingual_v2",
+    "voice": "JBFqnCBsd6RMkjVDRZzb"
+  }
+}

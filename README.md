@@ -20,6 +20,14 @@ Time to play: 32 seconds.
 
 Time to play: 3 seconds.
 
+**Supported LLMs:**
+1. OpenAI
+
+**Supported TTS engines:**
+1. OpenAI
+2. Google Cloud
+3. Elevenlabs
+
 ## Installation
 
 1. Clone the repo, navigate to the folder with the code.
@@ -28,15 +36,14 @@ Time to play: 3 seconds.
 
 ## Configuration
 
-At this point we support OpenAI as the LLM engine and either OpenAI (used by default) or Google Cloud as TTS engines.
 General settings go under `"main"` in the `configuration.json`. All of them need to be provided, but the default config has already all of them prefilled, except for the `"openai_api_key"`.
 ```
 {
   "main":{
-    "openai_api_key": <your-openai-api-key>, # https://platform.openai.com/settings/organization/api-keys
+    "openai_api_key": <your-openai-api-key>,
     "llm_model": <model-to-use>, # https://platform.openai.com/docs/models
     "llm_system_prompt": <system-prompt>, # System prompt that is applied to all requests
-    "tts_engine": <selected-tts-engine>, # Selected TTS engine, can be either "openai" or "google_cloud"
+    "tts_engine": <selected-tts-engine>, # Selected TTS engine
     "host": <service-host>, # Host to serve 
     "port": <service-port> # Port to serve
   }
@@ -44,7 +51,6 @@ General settings go under `"main"` in the `configuration.json`. All of them need
 ```
 
 **To use OpenAI TTS engine:**
-
 This engine is enabled by default. You can pass additional parameters in your `configuration.json`, see `configuration_examples/configuration_openai.json` for all supported options.
 
 **To use Google Cloud TTS engine:**
@@ -57,6 +63,18 @@ This engine is enabled by default. You can pass additional parameters in your `c
 }
 ```
 You can pass additional parameters in your `configuration.json`, see `configuration_examples/configuration_google_cloud.json` for all supported options.
+
+**To use Elevenlabs TTS engine:**
+1. First you need to obtain an API key from ElevenLabs. Get it [here](https://elevenlabs.io/app/settings/api-keys).
+2. Change `tts_engine` to `elevenlabs` in your `configuration.json`.
+3. Add ElevenLabs settings to the `configuration.json`. Only the `"api_key"` is required, the rest have default values:
+```
+"elevenlabs": {
+  "api_key": "<your-elevenlabs-api-key>"
+}
+```
+You can pass additional parameters in your `configuration.json`, see `configuration_examples/configuration_elevenlabs.json` for all supported options.
+
 
 ## Usage
 Run the main script with `./start.sh` for Unix-based systems (make sure to run `chmod +x start.sh` first) or `start.bat` for Windows. This will create an endpoint at `0.0.0.0:8888/play` that accepts your prompt as a parameter. When you access this endpoint, it will call your LLM model and stream the response directly into a TTS engine of your choice. You can test it by navigating in your browser to `http://<your-host-ip>:<your-port>/play?prompt=Tell+me+a+story+about+home+assistant`. You are almost there, the only thing that is left is to create some home assistant automations to start using this service with Home Assistant!

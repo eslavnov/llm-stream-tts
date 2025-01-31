@@ -5,6 +5,8 @@ from fastapi.responses import StreamingResponse
 import json
 import httpx
 
+from elevenlabs import stream
+from elevenlabs.client import ElevenLabs
 from google.api_core.exceptions import GoogleAPIError
 from google.cloud import texttospeech
 import openai
@@ -22,6 +24,23 @@ def load_config():
             elif isinstance(value, dict):
                 merge_defaults(config[key], value)
   
+    def validate_credentials(config):
+        try:
+          if config["main"]["openai_api_key"]:
+            openai.api_key = config["main"]["openai_api_key"]
+        except KeyError as e:
+          raise Exception("You need to provide an OpenAI API key in your configuration.json") from e
+        try:
+            if config["main"]["tts_engine"]=="google_cloud" and not config["google_cloud"]["credentials_path"]:
+                raise Exception("You need to provide a Google Cloud credentials path in your configuration.json")
+        except KeyError as e:
+            raise Exception("You need to provide a Google Cloud credentials path in your configuration.json") from e
+        try:
+            if config["main"]["tts_engine"]=="elevenlabs" and not config["elevenlabs"]["api_key"]:
+                raise Exception("You need to provide an ElevenLabs API key in your configuration.json")
+        except KeyError as e:
+            raise Exception("You need to provide an ElevenLabs API key in your configuration.json") from e
+        
     # Load defaults and configuration from JSON file
     with open('defaults.json', 'r') as f:
       defaults = json.load(f)
@@ -30,15 +49,8 @@ def load_config():
 
     if config["main"]["tts_engine"] not in config:
       config[config["main"]["tts_engine"]] = {}
-
-    # Check for the OpenAI API key
-    try:
-      if config["main"]["openai_api_key"]:
-        openai.api_key = config["main"]["openai_api_key"]
-    except KeyError as e:
-      raise Exception("You need to provide an OpenAI API key in your configuration.json") from e
-    
-    # Merge defaults with configuration
+      
+    validate_credentials(config)
     merge_defaults(config, defaults)
     return config
             
@@ -121,6 +133,23 @@ async def tts_stream_openai(sentence, model, voice):
     except Exception as e:
         print(f"Unexpected error: {e}")
         yield b""  # Return an empty byte string on error
+        
+async def tts_stream_elevenlabs(sentence, model, voice, api_key):
+    """Calls ElevenLabs TTS and streams back audio."""
+    try:
+        client = ElevenLabs(api_key=api_key)
+        response = client.text_to_speech.convert_as_stream(
+            text=sentence,
+            voice_id=voice,
+            model_id=model
+        )
+        # Stream response in chunks
+        for audio_chunk in response:
+            yield audio_chunk
+
+    except Exception as e:
+        print(f"ElevenLabs TTS API error: {e}")
+        yield b""  # Return an empty byte string on error
             
 async def tts_stream(sentence,tts_engine):
     """Streams back audio from Google Cloud TTS or OpenAI TTS."""
@@ -130,7 +159,10 @@ async def tts_stream(sentence,tts_engine):
     elif tts_engine == "openai":
         async for audio_chunk in tts_stream_openai(sentence, model=config["openai"]["model"], voice=config["openai"]["voice"]):
             yield audio_chunk
-
+    elif tts_engine == "elevenlabs":
+        async for audio_chunk in tts_stream_elevenlabs(sentence, model=config["elevenlabs"]["model"], voice=config["elevenlabs"]["voice"], api_key=config["elevenlabs"]["api_key"]):
+            yield audio_chunk
+            
 async def play_audio_stream(prompt, file_path):
     """Runs an LLM prompt, streams the response as TTS audio and saves to a file."""
     collected_text = ""
