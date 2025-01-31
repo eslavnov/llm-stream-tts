@@ -80,11 +80,26 @@ General settings go under `"main"` in the `configuration.json`. All of them need
 ```
 
 **TTS settings**
-**To use OpenAI TTS engine:**
-This engine is enabled by default. You can pass additional parameters in your `configuration.json`, see `configuration_examples/configuration_openai.json` for all supported options.
 
-**To use Google Cloud TTS engine:**
-1. First you need to obtain service account file from Google Cloud. Follow [these instructions](https://www.home-assistant.io/integrations/google_cloud/#obtaining-service-account-file), you need only text-to-speech.
+**TTS settings - OpenAI:**
+
+This engine is enabled by default. 
+```
+{
+    "main": {
+      "tts_engine": "openai",
+      ...
+    },
+    "openai": {
+      <optional parameters>
+    }
+}
+```
+You can pass additional parameters in your `configuration.json`, see `configuration_examples/configuration_openai.json` for all supported options.
+
+**TTS settings - Google Cloud:**
+
+1. First you need to obtain a service account file from Google Cloud. Follow [these instructions](https://www.home-assistant.io/integrations/google_cloud/#obtaining-service-account-file), you need only text-to-speech.
 2. Change `tts_engine` to `google_cloud` in your `configuration.json`.
 3. Add Google Cloud settings to the `configuration.json`. Only the `"credentials_path"` is required, the rest have default values:
 ```
@@ -100,7 +115,7 @@ This engine is enabled by default. You can pass additional parameters in your `c
 ```
 You can pass additional parameters in your `configuration.json`, see `configuration_examples/configuration_google_cloud.json` for all supported options.
 
-**To use Elevenlabs TTS engine:**
+**TTS settings - Elevenlabs:**
 1. First you need to obtain an API key from ElevenLabs. Get it [here](https://elevenlabs.io/app/settings/api-keys).
 2. Change `tts_engine` to `elevenlabs` in your `configuration.json`.
 3. Add ElevenLabs settings to the `configuration.json`. Only the `"api_key"` is required, the rest have default values:
