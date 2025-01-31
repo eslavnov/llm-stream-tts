@@ -1,24 +1,30 @@
-# Quick responses from TTS for long LLM outputs (works with Home Assistant!)
+# Make HAVPE respond quickly on long LLM outputs 
+
+## What is the problem?
+
+Home Assistant Voice Preview Edition (HAVPE) devices are amazing, but they do not handle long TTS responses that well, resulting in them silently failing on long audio responses. 
+
+Let's say you are using a LLM in your pipeline and you try to announce via a TTS a response to a prompt like "Tell me a story about home assistant". Suppose it would take 30 seconds for the TTS system to generate an audio, since the story is going to be a few minutes long. 
+
+**Here is what would happen now with HAVPE devices:**
+
+*You send a request to the LLM => it takes 2 seconds to generate the output text => the text is sent to the TTS system => you will NOT get any response because there is a **5 second timeout** in HAVPE devices; in the HAVPE logs you will see `“HTTP_CLIENT: Connection timed out before data was ready!”`.*
+
+**Here is how to make it slightly better:**
+
+You could follow [these instructions](https://community.home-assistant.io/t/http-timeout-for-voice-assistant-pe-even-though-the-response-is-recieved/834200/4?u=gyrga) to increase the HAVPE device's timeout. This will ensure you always get a response back, but here is how the flow would look like:
+
+*You send a request to the LLM => it takes 2 seconds to generate the output text => the text is sent to the TTS system => it takes 30 seconds to generate the audio => the audio stream starts **32 seconds** after your request*
+
+It's an improvement, but not ideal. We can do better than this.
 
 ## What does it do?
 
-This script streams the response of your LLM directly into your TTS engine of choice, allowing it to reply quickly (around 3 seconds) even for long responses. So now if you ask your LLM to tell you a long story, you don't have to wait 30 seconds to get a response.
+This script streams the response of your LLM directly into your TTS engine of choice, allowing it to reply quickly (around 3 seconds) even for long responses. So now if you ask your LLM to tell you a long story, you don't have to wait 30 seconds to get a response. The flow would look like:
 
-The provided automation examples allow you to integrate this into Home Assistant: when you start a sentence with the words you define, it will switch to this streaming pipeline, which is perfect for stories, audiobooks, summaries, etc.
+*You send a request to the LLM => the response is read token by token in real time until we hit an end of a sentence => the sentence is sent to your TTS system => we immediately stream the audio => the audio stream starts **3 seconds** after your request => as more sentences are processed, they are added in real-time to the audio stream*
 
-**Regular behaviour:**
-1. Your prompt is sent to the LLM, where it is processed and response text is generated (2 seconds)
-2. The resulting text is sent to the TTS, where it is processed fully and the resulting audio is generated (depends on the length of the text, let's say 30 seconds)
-3. If you don't hit a timeout, the audio starts playing only after both of the steps are completed.
-
-Time to play: 32 seconds.
-
-**What this script does:**
-1. Your prompt is sent to the LLM, and as soon as it starts to generate response, we read it in real time character-by-character to piece together individual sentences.
-2. Individual sentences are sent to the TTS system, allowing it to start returning responses in seconds.
-3. As LLM spits out more sententes, they are sent to the TTS system to ensure continuous playback of the stream.
-
-Time to play: 3 seconds.
+The provided automation examples allow you to expose this script to your HAVPE devices: when you start a sentence with the words you define, it will switch to this streaming pipeline, which is perfect for stories, audiobooks, summaries, etc.
 
 **Supported LLMs:**
 1. OpenAI
@@ -30,13 +36,34 @@ Time to play: 3 seconds.
 
 ## Installation
 
-1. Clone the repo, navigate to the folder with the code.
+1. Clone the repo.
 2. Run the setup script with `./setup.sh` for Unix-based systems (make sure to run `chmod +x setup.sh` first) or `start.bat` for Windows. It will create a virtual environment and install the required dependencies.
 3. Edit `configuration.json` and add your OpenAI API key ([get it here](https://platform.openai.com/settings/organization/api-keys)). This is the only required parameter, but there are additional optional settings you can further configure - see below!
 
-## Configuration
+**(Optional) Run it as a UNIX service:**
+```
+[Unit]
+Description=LLM Stream TTS
+After=syslog.target network.target
 
-General settings go under `"main"` in the `configuration.json`. All of them need to be provided, but the default config has already all of them prefilled, except for the `"openai_api_key"`.
+[Service]
+User=homeassistant
+Group=homeassistant
+Type=simple
+
+WorkingDirectory=/home/homeassistant/helper_scripts/llm-stream-tts/
+ExecStart=bash ./start.sh
+TimeoutStopSec=20
+KillMode=process
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+## Configuration
+**General settings**
+
+General settings go under `"main"` in the `configuration.json`. All of them need to be provided, but the default config has already all of them prefilled, except for the `"openai_api_key"`. 
 ```
 {
   "main":{
@@ -50,6 +77,7 @@ General settings go under `"main"` in the `configuration.json`. All of them need
 }
 ```
 
+**TTS settings**
 **To use OpenAI TTS engine:**
 This engine is enabled by default. You can pass additional parameters in your `configuration.json`, see `configuration_examples/configuration_openai.json` for all supported options.
 
@@ -58,8 +86,14 @@ This engine is enabled by default. You can pass additional parameters in your `c
 2. Change `tts_engine` to `google_cloud` in your `configuration.json`.
 3. Add Google Cloud settings to the `configuration.json`. Only the `"credentials_path"` is required, the rest have default values:
 ```
-"google_cloud": {
-    "credentials_path": "creds.json"
+{
+    "main": {
+      "tts_engine": "google_cloud",
+      ...
+    },
+    "google_cloud": {
+      "credentials_path": "creds.json"
+    }
 }
 ```
 You can pass additional parameters in your `configuration.json`, see `configuration_examples/configuration_google_cloud.json` for all supported options.
@@ -69,18 +103,28 @@ You can pass additional parameters in your `configuration.json`, see `configurat
 2. Change `tts_engine` to `elevenlabs` in your `configuration.json`.
 3. Add ElevenLabs settings to the `configuration.json`. Only the `"api_key"` is required, the rest have default values:
 ```
-"elevenlabs": {
-  "api_key": "<your-elevenlabs-api-key>"
+{
+    "main": {
+      "tts_engine": "elevenlabs",
+      ...
+    },
+    "elevenlabs": {
+      "api_key": "<your-elevenlabs-api-key>"
+    }
 }
 ```
 You can pass additional parameters in your `configuration.json`, see `configuration_examples/configuration_elevenlabs.json` for all supported options.
 
 
 ## Usage
-Run the main script with `./start.sh` for Unix-based systems (make sure to run `chmod +x start.sh` first) or `start.bat` for Windows. This will create an endpoint at `0.0.0.0:8888/play` that accepts your prompt as a parameter. When you access this endpoint, it will call your LLM model and stream the response directly into a TTS engine of your choice. You can test it by navigating in your browser to `http://<your-host-ip>:<your-port>/play?prompt=Tell+me+a+story+about+home+assistant`. You are almost there, the only thing that is left is to create some home assistant automations to start using this service with Home Assistant!
+Run the main script with `./start.sh` for Unix-based systems (make sure to run `chmod +x start.sh` first) or `start.bat` for Windows. It will start a small API server (at http://0.0.0.0:8888 using the default settings) with the following endpoints:
 
-## Home Assistant integration
-You need to create two automations:
+1. `/play` - Accepts `prompt` as a parameter. Example usage: `http://<your-host-ip>:<your-port>/play?prompt=Tell+me+a+story+about+home+assistant`. This will call your LLM with the supplied prompt and will return a stream to the audio response generated by your TTS engine.
+
+You are almost there, the only thing that is left is to create some Home Assistant automations to start using this service with HAVPE devices!
+
+## Exposing the script to HAVPE devices
+You need to create two Home Assistant automations:
 1. One to trigger the new pipeline from your voice devices
 2. Another one to stop the stream
 
