@@ -205,8 +205,8 @@ With this automation, any time you say "stop the story", your voice device will 
 
 ### v0.0.3
 **Added**
-- `/tts` endpoint to generate audio from the TTS engine based on the provided text (skipping the LLM step).
-- Better logs.
+- `/tts` endpoint to generate audio from the TTS engine based on the provided text (skipping the LLM step)
+- Better logs
 
 ### v0.0.2
 **Added**
