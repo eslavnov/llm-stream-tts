@@ -199,6 +199,7 @@ With this automation, any time you say "stop the story", your voice device will 
 1. HAVPE does not stop the stream on the stop wakeword, use the automation above as a workaround.
 2. The text is sent to TTS systems sentence-by-sentence, so TTS has no awareness of the surrounding context. Usually it's not a problem, but sometimes it might affect the intonations.
 3. For now, the logic for splitting the stream into sentences is very rudimental, so sentences like "What a nice day, Mr. Smith!" will be parsed as two sentences: ["What a nice day, Mr.", "Smith!"]. This might result in some weird pauses/strange tempo when this happens.
+4. This script is not aware of your other interactions with your voice assistant(s), what's happening with your Home Assistant instance, your history with this script or anything else. It operates purely based on your `system_prompt` and the request prompt, nothing else.
 
 ## Change log
 
