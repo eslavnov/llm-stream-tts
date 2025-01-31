@@ -26,10 +26,12 @@ This script streams the response of your LLM directly into your TTS engine of ch
 
 The provided automation examples allow you to expose this script to your HAVPE devices: when you start a sentence with the words you define, it will switch to this streaming pipeline, which is perfect for stories, audiobooks, summaries, etc.
 
-**Supported LLMs:**
+## Supported LLM/TTS engines
+
+**LLMs:**
 1. OpenAI
 
-**Supported TTS engines:**
+**TTS engines:**
 1. OpenAI
 2. Google Cloud
 3. Elevenlabs
@@ -175,4 +177,13 @@ With this automation, any time you say "stop the story", your voice device will 
 1. HAVPE does not stop the stream on the stop wakeword, use the automation above as a workaround.
 2. The text is sent to TTS systems sentence-by-sentence, so TTS has no awareness of the surrounding context. Usually it's not a problem, but sometimes it might affect the intonations.
 3. For now, the logic for splitting the stream into sentences is very rudimental, so sentences like "What a nice day, Mr. Smith!" will be parsed as two sentences: ["What a nice day, Mr.", "Smith!"]. This might result in some weird pauses/strange tempo when this happens.
+
+## Change log
+
+### v0.0.2
+**Added**
+- Added ElevenLabs TTS engine
+
+### v0.0.1
+- Initial commit
 
