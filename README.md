@@ -40,9 +40,9 @@ The provided automation examples allow you to expose this script to your HAVPE d
 
 1. Clone the repo.
 2. Run the setup script with `./setup.sh` for Unix-based systems (make sure to run `chmod +x setup.sh` first) or `start.bat` for Windows. It will create a virtual environment and install the required dependencies.
-3. Edit `configuration.json` and add your OpenAI API key ([get it here](https://platform.openai.com/settings/organization/api-keys)). This is the only required parameter, but there are additional optional settings you can further configure - see below!
+3. Edit `configuration.json` and add your OpenAI API key to the `main` section ([get it here](https://platform.openai.com/settings/organization/api-keys)). This is the only required parameter, but there are additional optional settings you can further configure - see [Configuration](https://github.com/eslavnov/llm-stream-tts#configuration).
 
-**(Optional) Run it as a UNIX service:**
+**(Optional) Run as a UNIX service:**
 ```
 [Unit]
 Description=LLM Stream TTS
