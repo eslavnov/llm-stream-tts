@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 import json
 import httpx
+import logging
 
 from elevenlabs import stream
 from elevenlabs.client import ElevenLabs
@@ -12,6 +13,13 @@ from google.cloud import texttospeech
 import openai
 
 config = {}
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:     %(message)s"  # Removes module name
+)
+logger = logging.getLogger()
 
 app = FastAPI()
 
@@ -108,10 +116,10 @@ async def tts_stream_google(sentence, credentials_path, name, language_code, gen
         )
         yield response.audio_content
     except GoogleAPIError as e:
-        print(f"Google Cloud TTS API error: {e}")
+        logger.error(f"Google Cloud TTS API error: {e}")
         yield b""  # Yield an empty byte string to indicate an error
     except Exception as e:
-        print(f"Unexpected error: {e}")
+        logger.error(f"Unexpected error: {e}")
         yield b""  # Yield an empty byte string to indicate an error
 
 async def tts_stream_openai(sentence, model, voice):
@@ -128,10 +136,10 @@ async def tts_stream_openai(sentence, model, voice):
           yield audio_chunk
 
     except openai.OpenAIError as e:
-        print(f"OpenAI TTS API error: {e}")
+        logger.error(f"OpenAI TTS API error: {e}")
         yield b""  # Return an empty byte string on error
     except Exception as e:
-        print(f"Unexpected error: {e}")
+        logger.error(f"Unexpected error: {e}")
         yield b""  # Return an empty byte string on error
         
 async def tts_stream_elevenlabs(sentence, model, voice, api_key):
@@ -148,7 +156,7 @@ async def tts_stream_elevenlabs(sentence, model, voice, api_key):
             yield audio_chunk
 
     except Exception as e:
-        print(f"ElevenLabs TTS API error: {e}")
+        logger.error(f"ElevenLabs TTS API error: {e}")
         yield b""  # Return an empty byte string on error
             
 async def tts_stream(sentence,tts_engine):
@@ -163,19 +171,29 @@ async def tts_stream(sentence,tts_engine):
         async for audio_chunk in tts_stream_elevenlabs(sentence, model=config["elevenlabs"]["model"], voice=config["elevenlabs"]["voice"], api_key=config["elevenlabs"]["api_key"]):
             yield audio_chunk
             
-async def play_audio_stream(prompt, file_path):
+async def prompt_audio_streamer(prompt, file_path):
     """Runs an LLM prompt, streams the response as TTS audio and saves to a file."""
     collected_text = ""
     async with aiofiles.open(file_path, 'wb') as f:
         async for chunk in gpt4_stream(prompt):
             collected_text += chunk
             for sentence in sentence_generator(collected_text):
-                print(f"TTS {config['main']['tts_engine'].upper()}: {sentence}")
                 if sentence.strip() !=".":
+                  logger.info(f"TTS {config['main']['tts_engine'].upper()}: {sentence}")
                   async for audio_chunk in tts_stream(sentence, config["main"]["tts_engine"]):
                       await f.write(audio_chunk)
                       yield audio_chunk
                   collected_text = ""  # Clear collected_text after processing each sentence
+    
+async def audio_streamer(text, file_path):
+    """Streams the provided text as TTS audio and saves to a file."""
+    async with aiofiles.open(file_path, 'wb') as f:
+        for sentence in sentence_generator(text):
+            if sentence.strip() != ".":
+                logger.info(f"TTS {config['main']['tts_engine'].upper()}: {sentence}")
+                async for audio_chunk in tts_stream(sentence, config["main"]["tts_engine"]):
+                    await f.write(audio_chunk)
+                    yield audio_chunk
     
 @app.get("/play")
 async def play(request: Request):
@@ -183,11 +201,25 @@ async def play(request: Request):
     prompt = request.query_params.get('prompt', 'Say that you have recieved no prompt.')
     dummy_file_path = "/dev/null" # Dummy file path to discard audio
 
-    async def audio_streamer():
-        async for chunk in play_audio_stream(prompt, dummy_file_path):
+    async def dummy_audio_streamer():
+        async for chunk in prompt_audio_streamer(prompt, dummy_file_path):
             yield chunk
 
-    return StreamingResponse(audio_streamer(), media_type="audio/mp3")
+    return StreamingResponse(dummy_audio_streamer(), media_type="audio/mp3")
+
+@app.post("/tts")
+async def tts(request: Request):
+    """Processes a long text through TTS and returns an audio stream."""
+    dummy_file_path = "/dev/null"  # Dummy file path to discard audio
+    
+    try:
+        data = await request.json()
+        text = data.get("text", "")
+        if not text:
+            raise HTTPException(status_code=400, detail="Text is required")        
+        return StreamingResponse(audio_streamer(text, dummy_file_path), media_type="audio/mp3")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
 
 if __name__ == "__main__":
     import uvicorn
