@@ -20,7 +20,7 @@ It's an improvement, but not ideal. We can do better than this.
 
 ## Better than this
 
-This script streams the response of your LLM directly into your TTS engine of choice, allowing it to reply quickly even for long responses (around 3 seconds for Google Cloud Journey models; your mileage might vary on the TTS engine/model). So now if you ask your LLM to tell you a long story, you don't have to wait 30 seconds to get a response. The flow would look like:
+This script streams the response of your LLM directly into your TTS engine of choice, allowing it to reply quickly even for long responses (around 3 seconds for Google Cloud Journey models; your mileage might vary depending on the TTS engine/model). So now if you ask your LLM to tell you a long story, you don't have to wait 30 seconds to get a response. The flow would look like:
 
 *You send a request to the LLM => the response is read token by token in real time until we hit an end of a sentence => the sentence is sent to your TTS system => we immediately stream the audio => the audio stream starts **3 seconds** after your request => as more sentences are processed, they are added in real-time to the audio stream*
 
