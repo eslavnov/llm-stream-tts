@@ -1,36 +1,67 @@
 
 import aiofiles
+import asyncio
 from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import json
 import httpx
 import logging
+from pydantic import BaseModel
+from collections import defaultdict
 
 from elevenlabs import stream
 from elevenlabs.client import ElevenLabs
 from google.api_core.exceptions import GoogleAPIError
 from google.cloud import texttospeech
 import openai
-
+messages = None
 config = {}
+
+preloaded_llm_config = None
+preloaded_text = None
+preload_event = asyncio.Event()
+play_event = asyncio.Event()  
+tool_commands = ''
+
+class PreloadRequest(BaseModel):
+    messages: str
+    tools: str
+
+class MessagesRequest(BaseModel):
+    messages: list
+
+class PreloadTextRequest(BaseModel):
+    text: str
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(levelname)s:     %(message)s"  # Removes module name
+    format="%(levelname)s %(asctime)s: %(message)s",
+    datefmt="%H:%M:%S"  # Format for the timestamp
 )
 logger = logging.getLogger()
 
 app = FastAPI()
 
 def load_config():
-    # Add missing keys from defaults to config
-    def merge_defaults(config, defaults):
-        for key, value in defaults[config["main"]["tts_engine"]].items():
-            if key not in config:
-                config[config["main"]["tts_engine"]][key] = value
-            elif isinstance(value, dict):
-                merge_defaults(config[key], value)
+    """Loads config"""
+    def merge_defaults(cfg: dict, defaults_cfg: dict):
+        """Merges config with the defaults"""
+        def merge(cfg, defaults_cfg):
+            for key, value in defaults_cfg.items():
+                if key not in cfg:
+                    cfg[key] = value
+                elif isinstance(value, dict):
+                    cfg[key] = merge(cfg.get(key, {}), value)
+            return cfg
+
+        for key, value in defaults_cfg.items():
+            if key in cfg:
+                cfg[key] = merge(cfg[key], value)
+            else:
+                cfg[key] = value
+
+        return cfg
   
     def validate_credentials(config):
         try:
@@ -59,10 +90,10 @@ def load_config():
       config[config["main"]["tts_engine"]] = {}
       
     validate_credentials(config)
-    merge_defaults(config, defaults)
-    return config
+    return merge_defaults(config, defaults)
+    # return config
             
-def sentence_generator(text):
+def sentence_generator(text: str):
     """Yields sentences from text as they are detected."""
     sentence = ""
     for char in text:
@@ -73,32 +104,122 @@ def sentence_generator(text):
     if sentence.strip():
         yield sentence.strip()
 
-async def gpt4_stream(prompt):
-    """Streams response from OpenAI's GPT-4."""
-    async with httpx.AsyncClient() as client:
-        async with client.stream("POST", "https://api.openai.com/v1/chat/completions", 
-                                headers={"Authorization": f"Bearer {openai.api_key}", "Content-Type": "application/json"},
-                                json={
-                                    "model": config["main"]["llm_model"],
-                                    "messages": [{"role": "system", "content": config["main"]["llm_system_prompt"]}, {"role": "user", "content": prompt}],
-                                    "stream": True
-                                }) as response:
-            sentence = ""
-            async for line in response.aiter_lines():
-                if line.startswith("data:"):
-                    try:
-                        data = json.loads(line[5:].strip())
-                        if "choices" in data and data["choices"]:
-                            new_content = data["choices"][0]["delta"].get("content", "")
-                            if new_content:
-                                sentence += new_content
-                                if sentence.strip().endswith(('.', '!', '?')):
-                                    yield sentence.strip()
-                                    sentence = ""  # Reset sentence after yielding
-                    except json.JSONDecodeError:
-                        pass
+async def llm_stream(cfg: str, prompt: str, llm_config: dict):
+    """Streams responses from OpenAI's GPT-4, handles tool calls, and re-calls the API if needed."""
+    global tool_commands
+    global messages
 
-async def tts_stream_google(sentence, credentials_path, name, language_code, gender):
+    if messages is None:
+        # Initialize messages if not provided
+        messages = (
+            json.loads(llm_config["messages"])
+            if llm_config and "messages" in llm_config
+            else [
+                {"role": "system", "content": cfg["main"]["llm_system_prompt"]},
+                {"role": "user", "content": prompt},
+            ]
+        )
+
+    client = openai.OpenAI(
+        api_key=cfg["main"]["openai_api_key"],
+    )
+
+    while True:
+        tool_calls = {}  # Dictionary to store tool calls by index
+        sentence = ""
+        full_response = ""
+
+        logger.info("CALLING LLM")
+        print("???", messages[-2:])
+        try:
+            completion = client.chat.completions.create(
+                model=cfg["main"]["llm_model"],
+                messages=messages,
+                tools=json.loads(llm_config["tools"]) if llm_config and "tools" in llm_config else None,
+                stream=True,
+            )
+        except openai.OpenAIError as e:
+            logger.error(f"OpenAI API error: {e}")
+            return
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}")
+            return
+
+        # --- STREAM THE RESPONSE ---
+        for chunk in completion:
+            if chunk.choices:
+                delta = chunk.choices[0].delta
+                # print(delta)
+
+                # Handle streaming text
+                new_content = delta.content
+                if new_content:
+                    # print("Getting LLM response...")
+                    logger.info("Getting LLM response...")
+                    sentence += new_content
+                    full_response += new_content
+                    # Yield entire sentences based on punctuation
+                    if sentence.strip().endswith((".", "!", "?")):
+                        yield sentence.strip()
+                        sentence = ""  # Reset sentence buffer
+
+                # Handle tool calls
+                if delta.tool_calls:
+                    for tool_call in delta.tool_calls:
+                        index = tool_call.index
+                        if index not in tool_calls:
+                            tool_calls[index] = {
+                                "id": tool_call.id,
+                                "name": tool_call.function.name,
+                                "arguments": "",
+                            }
+                        tool_calls[index]["arguments"] += tool_call.function.arguments
+
+        # If there was trailing text without a final punctuation, yield it
+        if sentence.strip():
+            yield sentence.strip()
+
+        # Add the full response as a single message (if it has any content)
+        if full_response.strip():
+            messages.append({"role": "assistant", "content": full_response.strip()})
+
+        # If there are tool calls, add them to messages
+        if tool_calls:
+            for tcall in tool_calls.values():
+                try:
+                    # Transform to your desired structure
+                    tcall["function"] = {
+                        "name": tcall["name"],
+                        "arguments": tcall["arguments"],
+                    }
+                    tcall["type"] = "function"
+                    del tcall["arguments"]
+                    del tcall["name"]
+                except json.JSONDecodeError:
+                    print(
+                        f"Error parsing JSON for tool (index={tcall}): {tcall['arguments']}"
+                    )
+
+            final_tool_calls = list(tool_calls.values())
+            messages.append({"role": "assistant", "tool_calls": final_tool_calls})
+            tool_commands = json.dumps(final_tool_calls)
+
+            # We've updated messages and want the external system to react
+            preload_event.set()
+            
+            # Wait for the play_event to be set
+            logger.info("GOT TOOLS IN THE RESPONSE, RUNNING A PROMPT TO GENERATE RESPONSE")
+            await play_event.wait()
+            play_event.clear()  # Clear the event for future use
+
+            # At this point, 'messages' may have been modified externally,
+            # so loop back and call the API again with updated 'messages'.
+            # We'll continue in the `while True` loop.
+        else:
+            # No tool calls -> we can stop here
+            break
+          
+async def tts_stream_google(sentence: str, credentials_path: str, name: str, language_code: str, gender: str):
     """Calls Google Cloud TTS and streams back audio."""
     try:
         client = texttospeech.TextToSpeechClient.from_service_account_json(credentials_path)
@@ -122,7 +243,7 @@ async def tts_stream_google(sentence, credentials_path, name, language_code, gen
         logger.error(f"Unexpected error: {e}")
         yield b""  # Yield an empty byte string to indicate an error
 
-async def tts_stream_openai(sentence, model, voice):
+async def tts_stream_openai(sentence: str, model: str, voice: str):
     """Calls OpenAI TTS, saves audio to a file, and streams it in chunks."""
     try:
         response = openai.audio.speech.create(
@@ -142,7 +263,7 @@ async def tts_stream_openai(sentence, model, voice):
         logger.error(f"Unexpected error: {e}")
         yield b""  # Return an empty byte string on error
         
-async def tts_stream_elevenlabs(sentence, model, voice, api_key):
+async def tts_stream_elevenlabs(sentence: str, model: str, voice: str, api_key: str):
     """Calls ElevenLabs TTS and streams back audio."""
     try:
         client = ElevenLabs(api_key=api_key)
@@ -159,69 +280,232 @@ async def tts_stream_elevenlabs(sentence, model, voice, api_key):
         logger.error(f"ElevenLabs TTS API error: {e}")
         yield b""  # Return an empty byte string on error
             
-async def tts_stream(sentence,tts_engine):
-    """Streams back audio from Google Cloud TTS or OpenAI TTS."""
-    if tts_engine== "google_cloud":
-        async for audio_chunk in tts_stream_google(sentence, credentials_path=config["google_cloud"]["credentials_path"], name=config["google_cloud"]["name"], language_code=config["google_cloud"]["language_code"], gender=config["google_cloud"]["gender"]):
+async def tts_stream(sentence: str, cfg: dict):
+    """
+    Simple wrapper to route to whichever TTS engine is in config.
+    Here we only show google_cloud for brevity.
+    """
+    if cfg["main"]["tts_engine"] == "google_cloud":
+        async for audio_chunk in tts_stream_google(sentence, credentials_path=cfg["google_cloud"]["credentials_path"], name=cfg["google_cloud"]["name"], language_code=cfg["google_cloud"]["language_code"], gender=cfg["google_cloud"]["gender"]):
             yield audio_chunk
-    elif tts_engine == "openai":
-        async for audio_chunk in tts_stream_openai(sentence, model=config["openai"]["model"], voice=config["openai"]["voice"]):
+    elif cfg["main"]["tts_engine"]  == "openai":
+        async for audio_chunk in tts_stream_openai(sentence, model=cfg["openai"]["model"], voice=cfg["openai"]["voice"]):
             yield audio_chunk
-    elif tts_engine == "elevenlabs":
-        async for audio_chunk in tts_stream_elevenlabs(sentence, model=config["elevenlabs"]["model"], voice=config["elevenlabs"]["voice"], api_key=config["elevenlabs"]["api_key"]):
+    elif cfg["main"]["tts_engine"]  == "elevenlabs":
+        async for audio_chunk in tts_stream_elevenlabs(sentence, model=cfg["elevenlabs"]["model"], voice=cfg["elevenlabs"]["voice"], api_key=cfg["elevenlabs"]["api_key"]):
             yield audio_chunk
-            
-async def prompt_audio_streamer(prompt, file_path):
+    else:
+        print("FICK")
+        yield b""
+ 
+async def prompt_audio_streamer(prompt: str, cfg: dict, llm_config: dict, file_path: str = "/dev/null"):
     """Runs an LLM prompt, streams the response as TTS audio and saves to a file."""
     collected_text = ""
     async with aiofiles.open(file_path, 'wb') as f:
-        async for chunk in gpt4_stream(prompt):
+        async for chunk in llm_stream(cfg, prompt, llm_config):
             collected_text += chunk
             for sentence in sentence_generator(collected_text):
                 if sentence.strip() !=".":
                   logger.info(f"TTS {config['main']['tts_engine'].upper()}: {sentence}")
-                  async for audio_chunk in tts_stream(sentence, config["main"]["tts_engine"]):
+                  async for audio_chunk in tts_stream(sentence, cfg):
                       await f.write(audio_chunk)
                       yield audio_chunk
                   collected_text = ""  # Clear collected_text after processing each sentence
     
-async def audio_streamer(text, file_path):
-    """Streams the provided text as TTS audio and saves to a file."""
+async def audio_streamer(text: str, cfg: dict, file_path: str = "/dev/null"):
+    """
+    Takes the user text, splits into sentences, calls TTS for each one,
+    and yields the raw MP3 data in chunks. Also saves to 'file_path' (if desired).
+    """
     async with aiofiles.open(file_path, 'wb') as f:
         for sentence in sentence_generator(text):
-            if sentence.strip() != ".":
-                logger.info(f"TTS {config['main']['tts_engine'].upper()}: {sentence}")
-                async for audio_chunk in tts_stream(sentence, config["main"]["tts_engine"]):
+            if sentence.strip():
+                logger.info(f"TTS {cfg['main']['tts_engine'].upper()} => {sentence}")
+                async for audio_chunk in tts_stream(sentence, cfg):
                     await f.write(audio_chunk)
                     yield audio_chunk
+ 
+async def create_persistent_flac_encoder():
+    """
+    Creates a persistent ffmpeg subprocess that reads MP3 from stdin, outputs FLAC on stdout.
+    """
+    process = await asyncio.create_subprocess_exec(
+        'ffmpeg',
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-i', 'pipe:0',         # input is MP3 from stdin
+        '-ar', '24000',         # sample rate
+        '-ac', '1',             # mono
+        # Force 16 bits-per-sample:
+        '-sample_fmt', 's16',
+        '-f', 'flac',           # output format
+        'pipe:1',               # send FLAC to stdout
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    return process
+
+# async def stream_flac_from_mp3_sentences(prompt: str, cfg):
+#     """
+#     - Launch ffmpeg (MP3 -> FLAC).
+#     - Feed each sentence's MP3 data from TTS -> ffmpeg stdin.
+#     - Stream ffmpeg's FLAC output to the caller.
+#     """
+#     encoder = await create_persistent_flac_encoder()
+
+#     async def feed_encoder():
+#         async for mp3_data in audio_streamer(prompt, cfg):
+#             encoder.stdin.write(mp3_data)
+#             await encoder.stdin.drain()
+#         encoder.stdin.close()
+
+#     feed_task = asyncio.create_task(feed_encoder())
+
+#     try:
+#         while True:
+#             flac_chunk = await encoder.stdout.read(4096)
+#             if not flac_chunk:
+#                 break
+#             yield flac_chunk
+#     finally:
+#         await feed_task
+#         await encoder.wait()
+
+async def stream_flac_from_mp3_sentences_with_prompt(prompt: str, cfg: dict, llm_config=False):
+    """
+    - Launch ffmpeg (MP3 -> FLAC).
+    - Feed each sentence's MP3 data from TTS -> ffmpeg stdin.
+    - Stream ffmpeg's FLAC output to the caller.
+    """
+    encoder = await create_persistent_flac_encoder()
+
+    async def feed_encoder():
+        async for mp3_data in prompt_audio_streamer(prompt, cfg, llm_config):
+            encoder.stdin.write(mp3_data)
+            await encoder.stdin.drain()
+        encoder.stdin.close()
+
+    feed_task = asyncio.create_task(feed_encoder())
+
+    try:
+        while True:
+            flac_chunk = await encoder.stdout.read(4096)
+            if not flac_chunk:
+                break
+            yield flac_chunk
+    finally:
+        await feed_task
+        await encoder.wait()
+
+@app.post("/preload-text")
+async def preload_text(request_data: PreloadTextRequest):
+    """
+    Accepts JSON {"text": "..."} and stores it globally so that
+    /tts_say can use this text.
+    """
+    global preloaded_text
+
+    preloaded_text =  request_data.text
+    logger.info(f"NEW PRELOADED TEXT: {preloaded_text}")
+    response_data = {
+        "status": "ok",
+        "msg": "Text preloaded successfully.",
+    }
+    return JSONResponse(content=response_data)
+  
+@app.post("/preload")
+async def preload_llm_config(request_data: PreloadRequest):
+    """
+    Accepts JSON {"messages": "...", "tools": "..."} and stores it globally so that
+    /play/<filename>.flac can use this text instead of ?prompt=.
+    """
+    global messages
+    global preloaded_llm_config
+    global tool_commands
+
+    messages =  json.loads(request_data.messages)
+    logger.info(f"NEW MESSAGE: {messages[-1]['content']}")
+    preloaded_llm_config = {"messages": request_data.messages, "tools": request_data.tools }
     
-@app.get("/play")
-async def play(request: Request):
-    """Runs an LLM => TTS pipeline and returns an audio stream."""
-    prompt = request.query_params.get('prompt', 'Say that you have recieved no prompt.')
-    dummy_file_path = "/dev/null" # Dummy file path to discard audio
+    # Now we have our llm config with tools and messages ready. 
+    # We wait for the /play endpoint to trigger LLM pipeline with this config.
+    # It will call preload_event.set() when it has the full response.
+    await preload_event.wait()  # Wait for the event to be set
+    preload_event.clear()  # Clear the event for future use
+    
+    # Now that we have the full response, we return the updated messages history and the tool_calls to Home Assistant.
+    # This will allow it to run the tools and append the results to the messages history.
+    # Updated messages will come via the /write_history endpoint.
+    tools_request = tool_commands + ""
+    tool_commands=''
+    response_data = {
+        "status": "ok",
+        "msg": "Text preloaded successfully.",
+        "tool_calls": tools_request,
+        "messages": messages
+    }
+    return JSONResponse(content=response_data)
 
-    async def dummy_audio_streamer():
-        async for chunk in prompt_audio_streamer(prompt, dummy_file_path):
-            yield chunk
-
-    return StreamingResponse(dummy_audio_streamer(), media_type="audio/mp3")
-
-@app.post("/tts")
+@app.get("/tts_say")
 async def tts(request: Request):
     """Processes a long text through TTS and returns an audio stream."""
+    global config
     dummy_file_path = "/dev/null"  # Dummy file path to discard audio
-    
     try:
-        data = await request.json()
-        text = data.get("text", "")
-        if not text:
+        if not preloaded_text:
             raise HTTPException(status_code=400, detail="Text is required")        
-        return StreamingResponse(audio_streamer(text, dummy_file_path), media_type="audio/mp3")
+        return StreamingResponse(audio_streamer(preloaded_text, config, dummy_file_path), media_type="audio/mp3")
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON")
+      
+@app.get("/play/{filename}.flac")
+async def play_flac(filename: str, request: Request):
+    """
+    Endpoint for streaming the TTS audio in FLAC format.
+    We use ?prompt= from the query string.
+    Otherwise if llm config (tools + messages) was preloaded via /preload, we use that.
+    """
+    global config, preloaded_llm_config
+    # if not config:
+    #     config = load_config()
 
+    # Use prompt query param, otherwise use provided llm config
+    prompt = request.query_params.get("prompt", None)
+    if not preloaded_llm_config and not prompt:
+        prompt ="Say you have received no prompt."
+    llm_config =None if prompt else preloaded_llm_config
+    
+    flac_stream = stream_flac_from_mp3_sentences_with_prompt(prompt, config, llm_config)
+    
+    return StreamingResponse(
+        flac_stream,
+        media_type="audio/flac",
+        headers={"Content-Disposition": f'inline; filename="{filename}.flac"'}     # Content-Disposition so the browser sees it as a .flac file
+    )
+
+@app.get("/history")
+async def get_history():
+    """
+    Returns the history of messages as a JSON response.
+    """
+    global messages
+    return JSONResponse(content={"messages": messages})
+
+@app.post("/write_history")
+async def write_history(request_data: MessagesRequest):
+    """
+    Writes the messages history.
+    """
+    global messages
+    messages = request_data.messages
+    print("!!!!", messages[-2:])
+    play_event.set()
+    response_data = {"status": "ok", "msg": "Messages history updated."}
+    return JSONResponse(content=response_data)
+  
 if __name__ == "__main__":
     import uvicorn
     config = load_config()
+    print(config)
     uvicorn.run(app, host=config["main"]["host"], port=config["main"]["port"])
