@@ -7,28 +7,14 @@ import json
 import logging
 from pydantic import BaseModel
 
-
-# from elevenlabs import stream
 from elevenlabs.client import ElevenLabs
 from google.api_core.exceptions import GoogleAPIError
 from google.cloud import texttospeech
 import openai
-config = {}
 
+config = {}
 store = {}
 
-
-def store_get(client_id):
-  global store
-  return store[client_id] if client_id in store else {}
-
-def store_put(client_id: str, data: dict):
-  global store
-  store[client_id] = data
-  return store[client_id]
-
-messages = None
-preloaded_text = None
 preload_event = asyncio.Event()
 play_event = asyncio.Event()  
 
@@ -51,6 +37,19 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 app = FastAPI()
+
+def store_get(client_id: str):
+  global store
+  return store[client_id] if client_id in store else {}
+
+def store_put(client_id: str, data: dict):
+  global store
+  store[client_id] = data
+  return store[client_id]
+
+def config_get():
+  global config
+  return config
 
 def load_config():
     """Loads config"""
@@ -138,9 +137,16 @@ async def llm_stream(cfg: str, prompt: str, llm_config: dict, client_id: str):
         tool_calls = {}  # Dictionary to store tool calls by index
         sentence = ""
         full_response = ""
-
-        logger.info("CALLING LLM")
-        print("???", messages[-2:])
+        client_store = store_get(client_id)
+        messages = client_store["messages"]
+        logger.info("CALLING LLM") #, json.dumps(messages[-2:]))
+        
+        # fail safe in case we did not get tool_call response and trying to issue a new command
+        if "tool_calls" in messages[-2] and messages[-1]['role']=='user':
+          logger.info("FAILSAFE TRIGGERED, IT'S OK")
+          client_store["messages"].pop(-2)
+          store_put(client_id, client_store)
+  
         try:
             completion = client.chat.completions.create(
                 model=cfg["main"]["llm_model"],
@@ -468,7 +474,7 @@ async def preload_llm_config(client_id: str, request_data: PreloadRequest):
 @app.get("/tts_say/{client_id}")
 async def tts(request: Request):
     """Processes a long text through TTS and returns an audio stream."""
-    global config
+    config = config(get)
     dummy_file_path = "/dev/null"  # Dummy file path to discard audio
     client_store = store_get(client_id)
     preloaded_text = client_store["preloaded_text"] if "preloaded_text" in client_store else None
@@ -486,7 +492,7 @@ async def play_flac(client_id: str, request: Request):
     We use ?prompt= from the query string.
     Otherwise if llm config (tools + messages) was preloaded via /preload, we use that.
     """
-    global config
+    config = config_get()
     # if not config:
     #     config = load_config()
     # Use prompt query param, otherwise use provided llm config
@@ -522,7 +528,6 @@ async def write_history(client_id: str, request_data: MessagesRequest):
     messages = request_data.messages
     client_store["messages"] = messages
     store_put(client_id, client_store)
-    print("!!!!", messages[-2:])
     play_event.set()
     response_data = {"status": "ok", "msg": "Messages history updated."}
     return JSONResponse(content=response_data)
