@@ -15,9 +15,6 @@ import openai
 config = {}
 store = {}
 
-preload_event = asyncio.Event()
-play_event = asyncio.Event()  
-
 class PreloadRequest(BaseModel):
     messages: str
     tools: str
@@ -38,6 +35,19 @@ logger = logging.getLogger()
 
 app = FastAPI()
 
+def get_client_events(client_id: str):
+    """
+    Returns (preload_event, play_event) for the given client_id,
+    creating them if they don't yet exist in store[client_id].
+    """
+    client_store = store_get(client_id)
+    if "preload_event" not in client_store:
+        client_store["preload_event"] = asyncio.Event()
+    if "play_event" not in client_store:
+        client_store["play_event"] = asyncio.Event()
+    store_put(client_id, client_store)  # update store if new events were created
+    return client_store["preload_event"], client_store["play_event"]
+  
 def store_get(client_id: str):
   global store
   return store[client_id] if client_id in store else {}
@@ -227,6 +237,9 @@ async def llm_stream(cfg: str, prompt: str, llm_config: dict, client_id: str):
             store_put(client_id, client_store)
             
             # We've updated messages and want the external system to react
+            preload_event, play_event = get_client_events(client_id)
+
+            # later, when you want to notify that we have new tool calls:
             preload_event.set()
             
             # Wait for the play_event to be set
@@ -453,8 +466,12 @@ async def preload_llm_config(client_id: str, request_data: PreloadRequest):
     # Now we have our llm config with tools and messages ready. 
     # We wait for the /play endpoint to trigger LLM pipeline with this config.
     # It will call preload_event.set() when it has the full response.
-    await preload_event.wait()  # Wait for the event to be set
-    preload_event.clear()  # Clear the event for future use
+    # get or create the events for this client
+    preload_event, play_event = get_client_events(client_id)
+
+    # Wait for the client-specific preload_event
+    await preload_event.wait()
+    preload_event.clear()
     
     # Now that we have the full response, we return the updated messages history and the tool_calls to Home Assistant.
     # This will allow it to run the tools and append the results to the messages history.
@@ -528,7 +545,9 @@ async def write_history(client_id: str, request_data: MessagesRequest):
     messages = request_data.messages
     client_store["messages"] = messages
     store_put(client_id, client_store)
+    preload_event, play_event = get_client_events(client_id)
     play_event.set()
+
     response_data = {"status": "ok", "msg": "Messages history updated."}
     return JSONResponse(content=response_data)
   
