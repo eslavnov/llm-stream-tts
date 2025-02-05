@@ -4,24 +4,33 @@ import asyncio
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 import json
-import httpx
 import logging
 from pydantic import BaseModel
-from collections import defaultdict
 
-from elevenlabs import stream
+
+# from elevenlabs import stream
 from elevenlabs.client import ElevenLabs
 from google.api_core.exceptions import GoogleAPIError
 from google.cloud import texttospeech
 import openai
-messages = None
 config = {}
 
-preloaded_llm_config = None
+store = {}
+
+
+def store_get(client_id):
+  global store
+  return store[client_id] if client_id in store else {}
+
+def store_put(client_id: str, data: dict):
+  global store
+  store[client_id] = data
+  return store[client_id]
+
+messages = None
 preloaded_text = None
 preload_event = asyncio.Event()
 play_event = asyncio.Event()  
-tool_commands = ''
 
 class PreloadRequest(BaseModel):
     messages: str
@@ -63,22 +72,23 @@ def load_config():
 
         return cfg
   
-    def validate_credentials(config):
+    def validate_credentials(cfg:dict):
         try:
-          if config["main"]["openai_api_key"]:
-            openai.api_key = config["main"]["openai_api_key"]
+          if cfg["main"]["openai_api_key"]:
+            openai.api_key = cfg["main"]["openai_api_key"]
         except KeyError as e:
           raise Exception("You need to provide an OpenAI API key in your configuration.json") from e
         try:
-            if config["main"]["tts_engine"]=="google_cloud" and not config["google_cloud"]["credentials_path"]:
+            if cfg["main"]["tts_engine"]=="google_cloud" and not cfg["google_cloud"]["credentials_path"]:
                 raise Exception("You need to provide a Google Cloud credentials path in your configuration.json")
         except KeyError as e:
             raise Exception("You need to provide a Google Cloud credentials path in your configuration.json") from e
         try:
-            if config["main"]["tts_engine"]=="elevenlabs" and not config["elevenlabs"]["api_key"]:
+            if cfg["main"]["tts_engine"]=="elevenlabs" and not cfg["elevenlabs"]["api_key"]:
                 raise Exception("You need to provide an ElevenLabs API key in your configuration.json")
         except KeyError as e:
             raise Exception("You need to provide an ElevenLabs API key in your configuration.json") from e
+        return cfg
         
     # Load defaults and configuration from JSON file
     with open('defaults.json', 'r') as f:
@@ -88,10 +98,8 @@ def load_config():
 
     if config["main"]["tts_engine"] not in config:
       config[config["main"]["tts_engine"]] = {}
-      
-    validate_credentials(config)
-    return merge_defaults(config, defaults)
-    # return config
+
+    return merge_defaults(validate_credentials(config), defaults)
             
 def sentence_generator(text: str):
     """Yields sentences from text as they are detected."""
@@ -104,25 +112,27 @@ def sentence_generator(text: str):
     if sentence.strip():
         yield sentence.strip()
 
-async def llm_stream(cfg: str, prompt: str, llm_config: dict):
+async def llm_stream(cfg: str, prompt: str, llm_config: dict, client_id: str):
+    print("!!!!!", client_id)
     """Streams responses from OpenAI's GPT-4, handles tool calls, and re-calls the API if needed."""
-    global tool_commands
-    global messages
-
+    messages = None
+    client_store = store_get(client_id)
+    if "messages" in client_store:
+      messages = client_store["messages"]
+      
     if messages is None:
-        # Initialize messages if not provided
+        # Check if messages were provided in the llm config
         messages = (
             json.loads(llm_config["messages"])
             if llm_config and "messages" in llm_config
             else [
-                {"role": "system", "content": cfg["main"]["llm_system_prompt"]},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": cfg["main"]["llm_system_prompt"]}, {"role": "user", "content": prompt},
             ]
         )
+        client_store["messages"] = messages
+        store_put(client_id, client_store)
 
-    client = openai.OpenAI(
-        api_key=cfg["main"]["openai_api_key"],
-    )
+    client = openai.OpenAI(api_key=cfg["main"]["openai_api_key"])
 
     while True:
         tool_calls = {}  # Dictionary to store tool calls by index
@@ -182,6 +192,9 @@ async def llm_stream(cfg: str, prompt: str, llm_config: dict):
         # Add the full response as a single message (if it has any content)
         if full_response.strip():
             messages.append({"role": "assistant", "content": full_response.strip()})
+            client_store = store_get(client_id)
+            client_store["messages"] = messages
+            store_put(client_id, client_store)
 
         # If there are tool calls, add them to messages
         if tool_calls:
@@ -202,8 +215,11 @@ async def llm_stream(cfg: str, prompt: str, llm_config: dict):
 
             final_tool_calls = list(tool_calls.values())
             messages.append({"role": "assistant", "tool_calls": final_tool_calls})
-            tool_commands = json.dumps(final_tool_calls)
-
+            client_store = store_get(client_id)
+            client_store["messages"] = messages
+            client_store["tool_commands"] = final_tool_calls
+            store_put(client_id, client_store)
+            
             # We've updated messages and want the external system to react
             preload_event.set()
             
@@ -298,11 +314,11 @@ async def tts_stream(sentence: str, cfg: dict):
         print("FICK")
         yield b""
  
-async def prompt_audio_streamer(prompt: str, cfg: dict, llm_config: dict, file_path: str = "/dev/null"):
+async def prompt_audio_streamer(prompt: str, cfg: dict, llm_config: dict, client_id: str, file_path: str = "/dev/null"):
     """Runs an LLM prompt, streams the response as TTS audio and saves to a file."""
     collected_text = ""
     async with aiofiles.open(file_path, 'wb') as f:
-        async for chunk in llm_stream(cfg, prompt, llm_config):
+        async for chunk in llm_stream(cfg, prompt, llm_config, client_id):
             collected_text += chunk
             for sentence in sentence_generator(collected_text):
                 if sentence.strip() !=".":
@@ -372,7 +388,7 @@ async def create_persistent_flac_encoder():
 #         await feed_task
 #         await encoder.wait()
 
-async def stream_flac_from_mp3_sentences_with_prompt(prompt: str, cfg: dict, llm_config=False):
+async def stream_flac_from_mp3_sentences_with_prompt(prompt: str, cfg: dict, client_id: str, llm_config=False):
     """
     - Launch ffmpeg (MP3 -> FLAC).
     - Feed each sentence's MP3 data from TTS -> ffmpeg stdin.
@@ -381,7 +397,7 @@ async def stream_flac_from_mp3_sentences_with_prompt(prompt: str, cfg: dict, llm
     encoder = await create_persistent_flac_encoder()
 
     async def feed_encoder():
-        async for mp3_data in prompt_audio_streamer(prompt, cfg, llm_config):
+        async for mp3_data in prompt_audio_streamer(prompt, cfg, llm_config, client_id):
             encoder.stdin.write(mp3_data)
             await encoder.stdin.drain()
         encoder.stdin.close()
@@ -398,36 +414,36 @@ async def stream_flac_from_mp3_sentences_with_prompt(prompt: str, cfg: dict, llm
         await feed_task
         await encoder.wait()
 
-@app.post("/preload-text")
-async def preload_text(request_data: PreloadTextRequest):
+@app.post("/preload-text/{client_id}")
+async def preload_text(client_id: str, request_data: PreloadTextRequest):
     """
     Accepts JSON {"text": "..."} and stores it globally so that
     /tts_say can use this text.
     """
-    global preloaded_text
-
-    preloaded_text =  request_data.text
-    logger.info(f"NEW PRELOADED TEXT: {preloaded_text}")
+    client_store = store_get(client_id)
+    client_store["preloaded_text"]= request_data.text
+    store_put(client_id, client_store)
+    logger.info(f"NEW PRELOADED TEXT: {client_store['preloaded_text']}")
     response_data = {
         "status": "ok",
         "msg": "Text preloaded successfully.",
     }
     return JSONResponse(content=response_data)
   
-@app.post("/preload")
-async def preload_llm_config(request_data: PreloadRequest):
+@app.post("/preload/{client_id}")
+async def preload_llm_config(client_id: str, request_data: PreloadRequest):
     """
     Accepts JSON {"messages": "...", "tools": "..."} and stores it globally so that
     /play/<filename>.flac can use this text instead of ?prompt=.
     """
-    global messages
-    global preloaded_llm_config
-    global tool_commands
-
     messages =  json.loads(request_data.messages)
     logger.info(f"NEW MESSAGE: {messages[-1]['content']}")
-    preloaded_llm_config = {"messages": request_data.messages, "tools": request_data.tools }
-    
+
+    client_store = store_get(client_id)
+    client_store["messages"] = messages
+    client_store["preloaded_llm_config"] = {"messages": request_data.messages, "tools": request_data.tools }
+    store_put(client_id, client_store)
+
     # Now we have our llm config with tools and messages ready. 
     # We wait for the /play endpoint to trigger LLM pipeline with this config.
     # It will call preload_event.set() when it has the full response.
@@ -437,8 +453,10 @@ async def preload_llm_config(request_data: PreloadRequest):
     # Now that we have the full response, we return the updated messages history and the tool_calls to Home Assistant.
     # This will allow it to run the tools and append the results to the messages history.
     # Updated messages will come via the /write_history endpoint.
-    tools_request = tool_commands + ""
-    tool_commands=''
+    client_store = store_get(client_id)
+    tools_request = client_store["tool_commands"]
+    client_store["tool_commands"] = None
+    store_put(client_id, client_store)
     response_data = {
         "status": "ok",
         "msg": "Text preloaded successfully.",
@@ -447,11 +465,13 @@ async def preload_llm_config(request_data: PreloadRequest):
     }
     return JSONResponse(content=response_data)
 
-@app.get("/tts_say")
+@app.get("/tts_say/{client_id}")
 async def tts(request: Request):
     """Processes a long text through TTS and returns an audio stream."""
     global config
     dummy_file_path = "/dev/null"  # Dummy file path to discard audio
+    client_store = store_get(client_id)
+    preloaded_text = client_store["preloaded_text"] if "preloaded_text" in client_store else None
     try:
         if not preloaded_text:
             raise HTTPException(status_code=400, detail="Text is required")        
@@ -459,46 +479,49 @@ async def tts(request: Request):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON")
       
-@app.get("/play/{filename}.flac")
-async def play_flac(filename: str, request: Request):
+@app.get("/play/{client_id}.flac")
+async def play_flac(client_id: str, request: Request):
     """
     Endpoint for streaming the TTS audio in FLAC format.
     We use ?prompt= from the query string.
     Otherwise if llm config (tools + messages) was preloaded via /preload, we use that.
     """
-    global config, preloaded_llm_config
+    global config
     # if not config:
     #     config = load_config()
-
     # Use prompt query param, otherwise use provided llm config
+    client_store = store_get(client_id)
+    preloaded_llm_config = client_store["preloaded_llm_config"] if "preloaded_llm_config" in client_store else None
     prompt = request.query_params.get("prompt", None)
     if not preloaded_llm_config and not prompt:
         prompt ="Say you have received no prompt."
     llm_config =None if prompt else preloaded_llm_config
     
-    flac_stream = stream_flac_from_mp3_sentences_with_prompt(prompt, config, llm_config)
+    flac_stream = stream_flac_from_mp3_sentences_with_prompt(prompt, config, client_id, llm_config)
     
     return StreamingResponse(
         flac_stream,
         media_type="audio/flac",
-        headers={"Content-Disposition": f'inline; filename="{filename}.flac"'}     # Content-Disposition so the browser sees it as a .flac file
+        headers={"Content-Disposition": f'inline; filename="{client_id}.flac"'}     # Content-Disposition so the browser sees it as a .flac file
     )
-
-@app.get("/history")
-async def get_history():
+  
+@app.get("/history/{client_id}")
+async def get_history(client_id: str):
     """
     Returns the history of messages as a JSON response.
     """
-    global messages
-    return JSONResponse(content={"messages": messages})
+    client_store = store_get(client_id)
+    return JSONResponse(content={"messages": client_store["messages"]})
 
-@app.post("/write_history")
-async def write_history(request_data: MessagesRequest):
+@app.post("/write_history/{client_id}")
+async def write_history(client_id: str, request_data: MessagesRequest):
     """
     Writes the messages history.
     """
-    global messages
+    client_store = store_get(client_id)
     messages = request_data.messages
+    client_store["messages"] = messages
+    store_put(client_id, client_store)
     print("!!!!", messages[-2:])
     play_event.set()
     response_data = {"status": "ok", "msg": "Messages history updated."}
