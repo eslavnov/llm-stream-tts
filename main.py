@@ -1,29 +1,17 @@
 
 import aiofiles
-import asyncio
+from asyncio import Event
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 import json
 import logging
-from pydantic import BaseModel
 
-from elevenlabs.client import ElevenLabs
-from google.api_core.exceptions import GoogleAPIError
-from google.cloud import texttospeech
 import openai
+from audio_processing import create_persistent_flac_encoder, feed_encoder, stream_flac_from_mp3
+from tts_streaming import tts_stream_google, tts_stream_openai, tts_stream_elevenlabs, tts_stream
 
 config = {}
 store = {}
-
-class PreloadRequest(BaseModel):
-    messages: str
-    tools: str
-
-class MessagesRequest(BaseModel):
-    messages: list
-
-class PreloadTextRequest(BaseModel):
-    text: str
 
 # Configure logging
 logging.basicConfig(
@@ -33,7 +21,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger()
 
+# Initialize API
 app = FastAPI()
+
+def store_get(client_id: str):
+    """
+    Returns store for a given client based on its id
+    """
+    global store
+    return store[client_id] if client_id in store else {}
+
+def store_put(client_id: str, data: dict):
+    """
+    Writes store for a given client based on its id
+    """
+    global store
+    store[client_id] = data
+    return store[client_id]
 
 def get_client_events(client_id: str):
     """
@@ -42,27 +46,23 @@ def get_client_events(client_id: str):
     """
     client_store = store_get(client_id)
     if "preload_event" not in client_store:
-        client_store["preload_event"] = asyncio.Event()
+        client_store["preload_event"] = Event()
     if "play_event" not in client_store:
-        client_store["play_event"] = asyncio.Event()
+        client_store["play_event"] = Event()
     store_put(client_id, client_store)  # update store if new events were created
     return client_store["preload_event"], client_store["play_event"]
   
-def store_get(client_id: str):
-  global store
-  return store[client_id] if client_id in store else {}
-
-def store_put(client_id: str, data: dict):
-  global store
-  store[client_id] = data
-  return store[client_id]
-
 def config_get():
-  global config
-  return config
+    """
+    Returns global config
+    """
+    global config
+    return config
 
 def load_config():
-    """Loads config"""
+    """
+    Loads config, applies defaults for missing values
+    """
     def merge_defaults(cfg: dict, defaults_cfg: dict):
         """Merges config with the defaults"""
         def merge(cfg, defaults_cfg):
@@ -122,8 +122,10 @@ def sentence_generator(text: str):
         yield sentence.strip()
 
 async def llm_stream(cfg: str, prompt: str, llm_config: dict, client_id: str):
-    print("!!!!!", client_id)
-    """Streams responses from OpenAI's GPT-4, handles tool calls, and re-calls the API if needed."""
+    """
+    Streams responses from OpenAI's GPT-4. 
+    If tool calls are in the response, calls them, waits for Home Assistant response and re-calls the API if needed.
+    """
     messages = None
     client_store = store_get(client_id)
     if "messages" in client_store:
@@ -142,8 +144,10 @@ async def llm_stream(cfg: str, prompt: str, llm_config: dict, client_id: str):
         store_put(client_id, client_store)
 
     client = openai.OpenAI(api_key=cfg["main"]["openai_api_key"])
-
-    while True:
+    
+    max_iterations = 10
+    iteration_count = 0
+    while iteration_count < max_iterations:
         tool_calls = {}  # Dictionary to store tool calls by index
         sentence = ""
         full_response = ""
@@ -175,8 +179,7 @@ async def llm_stream(cfg: str, prompt: str, llm_config: dict, client_id: str):
         for chunk in completion:
             if chunk.choices:
                 delta = chunk.choices[0].delta
-                # print(delta)
-
+                
                 # Handle streaming text
                 new_content = delta.content
                 if new_content:
@@ -231,123 +234,33 @@ async def llm_stream(cfg: str, prompt: str, llm_config: dict, client_id: str):
 
             final_tool_calls = list(tool_calls.values())
             messages.append({"role": "assistant", "tool_calls": final_tool_calls})
+            
+            # store the messages and tool_calls
             client_store = store_get(client_id)
             client_store["messages"] = messages
             client_store["tool_commands"] = final_tool_calls
             store_put(client_id, client_store)
             
-            # We've updated messages and want the external system to react
+            # We signal that we are done and unblock the /preload endpoint.
+            # The tool_calls are returned to the Home Assistant integration.
+            # Now HASS can run them and provide a response.
+            # The integration with unblock play_event once it has the response from the tool calls.
+            logger.info("GOT TOOLS RESPONSE, RUNNING A PROMPT TO GENERATE SPEECH RESPONSE")
             preload_event, play_event = get_client_events(client_id)
-
-            # later, when you want to notify that we have new tool calls:
             preload_event.set()
-            
-            # Wait for the play_event to be set
-            logger.info("GOT TOOLS IN THE RESPONSE, RUNNING A PROMPT TO GENERATE RESPONSE")
+
             await play_event.wait()
             play_event.clear()  # Clear the event for future use
 
             # At this point, 'messages' may have been modified externally,
             # so loop back and call the API again with updated 'messages'.
-            # We'll continue in the `while True` loop.
+            # This will allow OpenAI to generate text based on the tool call responses.
         else:
             # No tool calls -> we can stop here
             break
-          
-async def tts_stream_google(sentence: str, credentials_path: str, name: str, language_code: str, gender: str):
-    """Calls Google Cloud TTS and streams back audio."""
-    try:
-        client = texttospeech.TextToSpeechClient.from_service_account_json(credentials_path)
-        input_text = texttospeech.SynthesisInput(text=sentence)
-        voice = texttospeech.VoiceSelectionParams(
-            name=name,
-            language_code=language_code,
-            ssml_gender = texttospeech.SsmlVoiceGender.FEMALE if gender == "FEMALE" else texttospeech.SsmlVoiceGender.MALE
-        )
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3
-        )
-        response = client.synthesize_speech(
-            input=input_text, voice=voice, audio_config=audio_config
-        )
-        yield response.audio_content
-    except GoogleAPIError as e:
-        logger.error(f"Google Cloud TTS API error: {e}")
-        yield b""  # Yield an empty byte string to indicate an error
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        yield b""  # Yield an empty byte string to indicate an error
+        iteration_count += 1
 
-async def tts_stream_openai(sentence: str, model: str, voice: str):
-    """Calls OpenAI TTS, saves audio to a file, and streams it in chunks."""
-    try:
-        response = openai.audio.speech.create(
-            model=model,
-            voice=voice,
-            input=sentence,
-            response_format="mp3"
-        )
-        # Stream response in chunks
-        for audio_chunk in response.iter_bytes(1024):
-          yield audio_chunk
-
-    except openai.OpenAIError as e:
-        logger.error(f"OpenAI TTS API error: {e}")
-        yield b""  # Return an empty byte string on error
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        yield b""  # Return an empty byte string on error
-        
-async def tts_stream_elevenlabs(sentence: str, model: str, voice: str, api_key: str):
-    """Calls ElevenLabs TTS and streams back audio."""
-    try:
-        client = ElevenLabs(api_key=api_key)
-        response = client.text_to_speech.convert_as_stream(
-            text=sentence,
-            voice_id=voice,
-            model_id=model
-        )
-        # Stream response in chunks
-        for audio_chunk in response:
-            yield audio_chunk
-
-    except Exception as e:
-        logger.error(f"ElevenLabs TTS API error: {e}")
-        yield b""  # Return an empty byte string on error
-            
-async def tts_stream(sentence: str, cfg: dict):
-    """
-    Simple wrapper to route to whichever TTS engine is in config.
-    Here we only show google_cloud for brevity.
-    """
-    if cfg["main"]["tts_engine"] == "google_cloud":
-        async for audio_chunk in tts_stream_google(sentence, credentials_path=cfg["google_cloud"]["credentials_path"], name=cfg["google_cloud"]["name"], language_code=cfg["google_cloud"]["language_code"], gender=cfg["google_cloud"]["gender"]):
-            yield audio_chunk
-    elif cfg["main"]["tts_engine"]  == "openai":
-        async for audio_chunk in tts_stream_openai(sentence, model=cfg["openai"]["model"], voice=cfg["openai"]["voice"]):
-            yield audio_chunk
-    elif cfg["main"]["tts_engine"]  == "elevenlabs":
-        async for audio_chunk in tts_stream_elevenlabs(sentence, model=cfg["elevenlabs"]["model"], voice=cfg["elevenlabs"]["voice"], api_key=cfg["elevenlabs"]["api_key"]):
-            yield audio_chunk
-    else:
-        print("FICK")
-        yield b""
- 
-async def prompt_audio_streamer(prompt: str, cfg: dict, llm_config: dict, client_id: str, file_path: str = "/dev/null"):
-    """Runs an LLM prompt, streams the response as TTS audio and saves to a file."""
-    collected_text = ""
-    async with aiofiles.open(file_path, 'wb') as f:
-        async for chunk in llm_stream(cfg, prompt, llm_config, client_id):
-            collected_text += chunk
-            for sentence in sentence_generator(collected_text):
-                if sentence.strip() !=".":
-                  logger.info(f"TTS {config['main']['tts_engine'].upper()}: {sentence}")
-                  async for audio_chunk in tts_stream(sentence, cfg):
-                      await f.write(audio_chunk)
-                      yield audio_chunk
-                  collected_text = ""  # Clear collected_text after processing each sentence
-    
-async def audio_streamer(text: str, cfg: dict, file_path: str = "/dev/null"):
+async def audio_streamer(text: str, cfg: dict, client_id: str, llm_config=None, file_path: str = "/dev/null"):
     """
     Takes the user text, splits into sentences, calls TTS for each one,
     and yields the raw MP3 data in chunks. Also saves to 'file_path' (if desired).
@@ -356,92 +269,44 @@ async def audio_streamer(text: str, cfg: dict, file_path: str = "/dev/null"):
         for sentence in sentence_generator(text):
             if sentence.strip():
                 logger.info(f"TTS {cfg['main']['tts_engine'].upper()} => {sentence}")
-                async for audio_chunk in tts_stream(sentence, cfg):
+                async for audio_chunk in tts_stream(sentence, cfg, logger):
                     await f.write(audio_chunk)
                     yield audio_chunk
- 
-async def create_persistent_flac_encoder():
-    """
-    Creates a persistent ffmpeg subprocess that reads MP3 from stdin, outputs FLAC on stdout.
-    """
-    process = await asyncio.create_subprocess_exec(
-        'ffmpeg',
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-i', 'pipe:0',         # input is MP3 from stdin
-        '-ar', '24000',         # sample rate
-        '-ac', '1',             # mono
-        # Force 16 bits-per-sample:
-        '-sample_fmt', 's16',
-        '-f', 'flac',           # output format
-        'pipe:1',               # send FLAC to stdout
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    return process
-
-# async def stream_flac_from_mp3_sentences(prompt: str, cfg):
-#     """
-#     - Launch ffmpeg (MP3 -> FLAC).
-#     - Feed each sentence's MP3 data from TTS -> ffmpeg stdin.
-#     - Stream ffmpeg's FLAC output to the caller.
-#     """
-#     encoder = await create_persistent_flac_encoder()
-
-#     async def feed_encoder():
-#         async for mp3_data in audio_streamer(prompt, cfg):
-#             encoder.stdin.write(mp3_data)
-#             await encoder.stdin.drain()
-#         encoder.stdin.close()
-
-#     feed_task = asyncio.create_task(feed_encoder())
-
-#     try:
-#         while True:
-#             flac_chunk = await encoder.stdout.read(4096)
-#             if not flac_chunk:
-#                 break
-#             yield flac_chunk
-#     finally:
-#         await feed_task
-#         await encoder.wait()
-
-async def stream_flac_from_mp3_sentences_with_prompt(prompt: str, cfg: dict, client_id: str, llm_config=False):
-    """
-    - Launch ffmpeg (MP3 -> FLAC).
-    - Feed each sentence's MP3 data from TTS -> ffmpeg stdin.
-    - Stream ffmpeg's FLAC output to the caller.
-    """
-    encoder = await create_persistent_flac_encoder()
-
-    async def feed_encoder():
-        async for mp3_data in prompt_audio_streamer(prompt, cfg, llm_config, client_id):
-            encoder.stdin.write(mp3_data)
-            await encoder.stdin.drain()
-        encoder.stdin.close()
-
-    feed_task = asyncio.create_task(feed_encoder())
-
-    try:
-        while True:
-            flac_chunk = await encoder.stdout.read(4096)
-            if not flac_chunk:
-                break
-            yield flac_chunk
-    finally:
-        await feed_task
-        await encoder.wait()
+    
+async def prompt_audio_streamer(prompt: str, cfg: dict, client_id: str, llm_config: dict, file_path: str = "/dev/null"):
+  """
+  Runs LLM prompt and streams the response in real time.
+  Takes the streaming response, splits into sentences, calls TTS for each one,
+  and yields the raw MP3 data in chunks. Also saves to 'file_path' (if desired).
+  """
+  collected_text = ""
+  async with aiofiles.open(file_path, 'wb') as f:
+      async for chunk in llm_stream(cfg, prompt, llm_config, client_id):
+          collected_text += chunk
+          for sentence in sentence_generator(collected_text):
+              if sentence.strip() !=".":
+                logger.info(f"TTS {config['main']['tts_engine'].upper()}: {sentence}")
+                async for audio_chunk in tts_stream(sentence, cfg, logger):
+                    await f.write(audio_chunk)
+                    yield audio_chunk
+                collected_text = ""  # Clear collected_text after processing each sentence
+  
 
 @app.post("/preload-text/{client_id}")
-async def preload_text(client_id: str, request_data: PreloadTextRequest):
+async def preload_text(client_id: str,  request: Request):
     """
     Accepts JSON {"text": "..."} and stores it globally so that
     /tts_say can use this text.
     """
+    data = await request.json()
+    text = data.get("text", "")
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required")
+
     client_store = store_get(client_id)
-    client_store["preloaded_text"]= request_data.text
+    client_store["preloaded_text"]= text
     store_put(client_id, client_store)
+    
     logger.info(f"NEW PRELOADED TEXT: {client_store['preloaded_text']}")
     response_data = {
         "status": "ok",
@@ -450,17 +315,22 @@ async def preload_text(client_id: str, request_data: PreloadTextRequest):
     return JSONResponse(content=response_data)
   
 @app.post("/preload/{client_id}")
-async def preload_llm_config(client_id: str, request_data: PreloadRequest):
+async def preload_llm_config(client_id: str, request: Request):
     """
     Accepts JSON {"messages": "...", "tools": "..."} and stores it globally so that
     /play/<filename>.flac can use this text instead of ?prompt=.
     """
-    messages =  json.loads(request_data.messages)
+    data = await request.json()
+    messages = json.loads(data.get("messages", "[]"))
+    tools = data.get("tools", "")
+    if not messages or not tools:
+        raise HTTPException(status_code=400, detail='"messages" and "tools"')
+
     logger.info(f"NEW MESSAGE: {messages[-1]['content']}")
 
     client_store = store_get(client_id)
     client_store["messages"] = messages
-    client_store["preloaded_llm_config"] = {"messages": request_data.messages, "tools": request_data.tools }
+    client_store["preloaded_llm_config"] = {"messages": messages, "tools": tools }
     store_put(client_id, client_store)
 
     # Now we have our llm config with tools and messages ready. 
@@ -469,7 +339,6 @@ async def preload_llm_config(client_id: str, request_data: PreloadRequest):
     # get or create the events for this client
     preload_event, play_event = get_client_events(client_id)
 
-    # Wait for the client-specific preload_event
     await preload_event.wait()
     preload_event.clear()
     
@@ -488,30 +357,32 @@ async def preload_llm_config(client_id: str, request_data: PreloadRequest):
     }
     return JSONResponse(content=response_data)
 
-@app.get("/tts_say/{client_id}")
-async def tts(request: Request):
-    """Processes a long text through TTS and returns an audio stream."""
-    config = config(get)
+@app.get("/tts_say/{client_id}.flac")
+async def tts(client_id: str, request: Request):
+    """Processes a long text through TTS sentence by sentence and returns an audio stream in real time."""
+    config = config_get()
     dummy_file_path = "/dev/null"  # Dummy file path to discard audio
     client_store = store_get(client_id)
     preloaded_text = client_store["preloaded_text"] if "preloaded_text" in client_store else None
-    try:
-        if not preloaded_text:
-            raise HTTPException(status_code=400, detail="Text is required")        
-        return StreamingResponse(audio_streamer(preloaded_text, config, dummy_file_path), media_type="audio/mp3")
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    # Call a function to run LLM-TTS pipeline that returns a flac stream
+    flac_stream = stream_flac_from_mp3(audio_streamer, preloaded_text, config, client_id, None)
+
+    return StreamingResponse(
+        flac_stream,
+        media_type="audio/flac",
+        headers={"Content-Disposition": f'inline; filename="{client_id}.flac"'}     # Content-Disposition so the browser sees it as a .flac file
+    )
       
 @app.get("/play/{client_id}.flac")
 async def play_flac(client_id: str, request: Request):
     """
-    Endpoint for streaming the TTS audio in FLAC format.
+    Endpoint for calling the LLM and streaming the TTS audio in FLAC format.
     We use ?prompt= from the query string.
     Otherwise if llm config (tools + messages) was preloaded via /preload, we use that.
     """
     config = config_get()
-    # if not config:
-    #     config = load_config()
+
     # Use prompt query param, otherwise use provided llm config
     client_store = store_get(client_id)
     preloaded_llm_config = client_store["preloaded_llm_config"] if "preloaded_llm_config" in client_store else None
@@ -520,8 +391,9 @@ async def play_flac(client_id: str, request: Request):
         prompt ="Say you have received no prompt."
     llm_config =None if prompt else preloaded_llm_config
     
-    flac_stream = stream_flac_from_mp3_sentences_with_prompt(prompt, config, client_id, llm_config)
-    
+    # Call a function to run LLM-TTS pipeline that returns a flac stream
+    flac_stream = stream_flac_from_mp3(prompt_audio_streamer, prompt, config, client_id, llm_config)
+
     return StreamingResponse(
         flac_stream,
         media_type="audio/flac",
@@ -532,17 +404,23 @@ async def play_flac(client_id: str, request: Request):
 async def get_history(client_id: str):
     """
     Returns the history of messages as a JSON response.
+    Used by the Home Assistant integration to provide tool_calls responses.
     """
     client_store = store_get(client_id)
     return JSONResponse(content={"messages": client_store["messages"]})
 
 @app.post("/write_history/{client_id}")
-async def write_history(client_id: str, request_data: MessagesRequest):
+async def write_history(client_id: str, request: Request):
     """
     Writes the messages history.
+    Used by the Home Assistant integration to provide tool_calls responses.
     """
+    data = await request.json()
+    messages = data.get("messages", [])
+    if not messages:
+        raise HTTPException(status_code=400, detail="Messages are required")
+      
     client_store = store_get(client_id)
-    messages = request_data.messages
     client_store["messages"] = messages
     store_put(client_id, client_store)
     preload_event, play_event = get_client_events(client_id)
@@ -554,5 +432,4 @@ async def write_history(client_id: str, request_data: MessagesRequest):
 if __name__ == "__main__":
     import uvicorn
     config = load_config()
-    print(config)
     uvicorn.run(app, host=config["main"]["host"], port=config["main"]["port"])
