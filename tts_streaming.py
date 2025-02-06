@@ -76,7 +76,6 @@ async def tts_stream_elevenlabs(sentence: str, model: str, voice: str, api_key: 
 async def tts_stream_piper(sentence: str, voice_name: str, host: str, port:str, logger) -> AsyncGenerator[bytes, None]:
     """Calls Piper, loads full audio (it does not support streaming), and streams it in chunks."""
     try:
-      print(host, port, voice_name)
       async with AsyncTcpClient(host, port) as client:
           logger.info("Connected to Piper TTS")
           voice: SynthesizeVoice | None = None

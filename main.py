@@ -156,7 +156,7 @@ async def llm_stream(cfg: str, prompt: str, llm_config: dict, client_id: str):
         messages = client_store["messages"]
         logger.info("CALLING LLM") #, json.dumps(messages[-2:]))
         
-        # fail safe in case we did not get tool_call response and trying to issue a new command
+        # fail safe in case we did not get tool_call response and try to issue a new command
         if "tool_calls" in messages[-2] and messages[-1]['role']=='user':
           logger.info("FAILSAFE TRIGGERED, IT'S OK")
           client_store["messages"].pop(-2)
@@ -320,7 +320,7 @@ async def preload_text(client_id: str,  request: Request):
 @app.post("/preload/{client_id}")
 async def preload_llm_config(client_id: str, request: Request):
     """
-    Accepts JSON {"messages": "...", "tools": "..."} and stores it globally so that
+    Accepts JSON {"messages", "tools", "model", "max_completion_tokens", "top_p" and "temperature"} and stores it globally so that
     /play/<filename>.flac can use this text instead of ?prompt=.
     """
     data = await request.json()
