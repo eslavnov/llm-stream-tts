@@ -164,9 +164,12 @@ async def llm_stream(cfg: str, prompt: str, llm_config: dict, client_id: str):
   
         try:
             completion = client.chat.completions.create(
-                model=cfg["main"]["llm_model"],
+                model=llm_config["model"],
                 messages=messages,
                 tools=json.loads(llm_config["tools"]) if llm_config and "tools" in llm_config else None,
+                temperature=llm_config["temperature"] if llm_config and "tools" in llm_config else cfg["main"]["temperature"],
+                top_p= llm_config["top_p"] if llm_config and "tools" in llm_config else cfg["main"]["top_p"],
+                max_completion_tokens= llm_config["max_completion_tokens"] if llm_config and "tools" in llm_config else cfg["main"]["max_completion_tokens"],
                 stream=True,
             )
         except openai.OpenAIError as e:
@@ -323,14 +326,18 @@ async def preload_llm_config(client_id: str, request: Request):
     data = await request.json()
     messages = json.loads(data.get("messages", "[]"))
     tools = data.get("tools", "")
-    if not messages or not tools:
-        raise HTTPException(status_code=400, detail='"messages" and "tools"')
+    max_completion_tokens = data.get("max_completion_tokens", "")
+    top_p = data.get("top_p", "")
+    temperature = data.get("temperature", "")
+    model = data.get("model", "")
+    if not (messages or tools or max_completion_tokens or top_p or temperature or model):
+        raise HTTPException(status_code=400, detail='"messages", "tools", "model" and its params are required')
 
     logger.info(f"NEW MESSAGE: {messages[-1]['content']}")
 
     client_store = store_get(client_id)
     client_store["messages"] = messages
-    client_store["preloaded_llm_config"] = {"messages": messages, "tools": tools }
+    client_store["preloaded_llm_config"] = {"messages": messages, "tools": tools, "max_completion_tokens":max_completion_tokens, "top_p":top_p, "temperature":temperature, "model": model  }
     store_put(client_id, client_store)
 
     # Now we have our llm config with tools and messages ready. 
