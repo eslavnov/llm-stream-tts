@@ -1,1 +1,1 @@
-Moed to https://github.com/eslavnov/ttmg_server
+Moved to https://github.com/eslavnov/ttmg_server
