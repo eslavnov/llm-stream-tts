@@ -35,6 +35,7 @@ The provided automation examples allow you to expose this script to your HAVPE d
 1. OpenAI
 2. Google Cloud
 3. ElevenLabs
+4. Wyoming-piper
 
 ## Installation
 
@@ -130,6 +131,24 @@ You can pass additional parameters in your `configuration.json`, see `configurat
 ```
 You can pass additional parameters in your `configuration.json`, see `configuration_examples/configuration_elevenlabs.json` for all supported options.
 
+**TTS settings - Wyoming-piper**
+1. Change `tts_engine` to `piper` in your `configuration.json`.
+3. Add wyoming-piper settings to the `configuration.json`. All have default values (see below):
+```
+{
+    "main": {
+      "tts_engine": "piper",
+      ...
+    },
+    "piper": {
+      "host": "127.0.0.1",
+      "port": "10300",
+      "voice_name": "en_GB-alan-medium"
+    }
+}
+```
+You can pass additional parameters in your `configuration.json`, see `configuration_examples/configuration_piper.json` for all supported options.
+
 
 ## Usage
 Run the main script with `./start.sh` for Unix-based systems (make sure to run `chmod +x start.sh` first) or `start.bat` for Windows. It will start a small API server (at http://0.0.0.0:8888 using the default settings) with the following endpoints:
@@ -202,6 +221,19 @@ With this automation, any time you say "stop the story", your voice device will 
 4. This script is not aware of your other interactions with your voice assistant(s), what's happening with your Home Assistant instance, your history with this script or anything else. It operates purely based on your `system_prompt` and the request prompt, nothing else.
 
 ## Change log
+
+### v0.0.6
+**Added**
+- Support for Wyoming-piper TTS engine
+
+### v0.0.5
+**Added**
+- Client store so we can support multiple HAVPE devices
+- Per client event blockers
+
+### v0.0.4
+**Added**
+- Flac support so we can play the output natively on HAVPE
 
 ### v0.0.3
 **Added**

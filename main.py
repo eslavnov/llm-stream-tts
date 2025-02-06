@@ -7,7 +7,7 @@ import json
 import logging
 
 import openai
-from audio_processing import create_persistent_flac_encoder, feed_encoder, stream_flac_from_mp3
+from audio_processing import create_persistent_flac_encoder, feed_encoder, stream_flac_from_audio_source
 from tts_streaming import tts_stream_google, tts_stream_openai, tts_stream_elevenlabs, tts_stream
 
 # Global config and client store
@@ -366,7 +366,7 @@ async def tts(client_id: str, request: Request):
     preloaded_text = client_store["preloaded_text"] if "preloaded_text" in client_store else None
 
     # Call a function to run LLM-TTS pipeline that returns a flac stream
-    flac_stream = stream_flac_from_mp3(audio_streamer, preloaded_text, config, client_id)
+    flac_stream = stream_flac_from_audio_source(audio_streamer, preloaded_text, config, client_id)
 
     return StreamingResponse(
         flac_stream,
@@ -392,7 +392,7 @@ async def play_flac(client_id: str, request: Request):
     llm_config =None if prompt else preloaded_llm_config
     
     # Call a function to run LLM-TTS pipeline that returns a flac stream
-    flac_stream = stream_flac_from_mp3(prompt_audio_streamer, prompt, config, client_id, llm_config)
+    flac_stream = stream_flac_from_audio_source(prompt_audio_streamer, prompt, config, client_id, llm_config)
 
     return StreamingResponse(
         flac_stream,

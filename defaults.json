@@ -11,5 +11,10 @@
   "elevenlabs": {
     "model": "eleven_multilingual_v2",
     "voice": "JBFqnCBsd6RMkjVDRZzb"
+  },
+  "piper": {
+    "host": "127.0.0.1",
+    "port": "10300",
+    "voice_name": "en_GB-alan-medium"
   }
 }
